@@ -27,12 +27,10 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-OPTIX_add_sample_executable( optixHello target_name
-  ${SAMPLES_CUDA_DIR}/helpers.h
-  draw_solid_color.cu
-  optixHello.cpp
-  optixHello.h
-
+OPTIX_add_sample_executable( optixPathTracer target_name
+  optixPathTracer.cu
+  optixPathTracer.cpp
+  optixPathTracer.h
   OPTIONS -rdc true
   )
 
