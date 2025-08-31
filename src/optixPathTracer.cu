@@ -105,7 +105,7 @@ static __forceinline__ __device__ RadiancePRD loadClosesthitRadiancePRD()
     prd.gradients.x = __uint_as_float(optixGetPayload_6());
     prd.gradients.y = __uint_as_float(optixGetPayload_7());
     prd.gradients.z = __uint_as_float(optixGetPayload_8());
-    prd.num_params_hit = __uint_as_float(optixGetPayload_9());
+    prd.num_params_hit = optixGetPayload_9();
 
     return prd;
 }
@@ -132,7 +132,7 @@ static __forceinline__ __device__ void storeClosesthitRadiancePRD(RadiancePRD pr
     optixSetPayload_6(__float_as_uint(prd.gradients.x));
     optixSetPayload_7(__float_as_uint(prd.gradients.y));
     optixSetPayload_8(__float_as_uint(prd.gradients.z));
-    optixSetPayload_9(__float_as_uint(prd.num_params_hit));
+    optixSetPayload_9(prd.num_params_hit);
 
     optixSetPayload_10(__float_as_uint(prd.emitted.x));
     optixSetPayload_11(__float_as_uint(prd.emitted.y));
@@ -234,7 +234,7 @@ static __forceinline__ __device__ void traceRadiance(
 
     optixInvoke(
         PAYLOAD_TYPE_RADIANCE,
-        u0, u1, u2, u3, u4, u_pdf, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
+        u0, u1, u2, u3, u4, u_pdf, u_grad0, u_grad1, u_grad2, u_params_hit, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
 
     prd.attenuation = make_float3(__uint_as_float(u0), __uint_as_float(u1), __uint_as_float(u2));
     prd.seed = u3;
@@ -334,8 +334,8 @@ extern "C" __global__ void __raygen__rg()
             // const float p = dot(prd.attenuation, make_float3(0.30f, 0.59f, 0.11f));
             const bool done = prd.done; // || rnd(prd.seed) > p;
 
-            // if (done)
-            break;
+            if (done)
+                break;
 
             // prd.attenuation /= p;
 
@@ -367,6 +367,8 @@ extern "C" __global__ void __raygen__rg()
     // }
     params.accum_buffer[image_index] = make_float4(accum_color, 1.0f);
     params.frame_buffer[image_index] = make_color(accum_color);
+    // TODO: no gamma correction + in floats
+    // params.color_buffer ?
     params.gradient_buffer[image_index] = make_color(accum_gradients);
 }
 
@@ -443,40 +445,36 @@ extern "C" __global__ void __closesthit__radiance()
 
     ParallelogramLight light = params.light;
 
-    // light sampling only when the final depth is reached
+    // light sampling only when the final depth is reached OR light is accessible
+
+    const float3 light_pos = light.corner + light.v1 * z1 + light.v2 * z2;
+
+    // Calculate properties of light sample (for area based pdf)
+    const float Ldist = length(light_pos - P);
+    const float3 L = normalize(light_pos - P);
+    const float nDl = dot(N, L);
+    const float LnDl = -dot(light.normal, L);
+
+    const float A = length(cross(light.v1, light.v2));
+    const bool occluded =
+        traceOcclusion(
+            params.handle,
+            P,
+            L,
+            0.01f,          // tmin
+            Ldist - 0.01f); // tmax
 
     //           MAX DEPTH
-    if (prd.depth == 20)
+    if (prd.depth >= 20 || !occluded)
     {
-
-        const float3 light_pos = light.corner + light.v1 * z1 + light.v2 * z2;
-
-        // Calculate properties of light sample (for area based pdf)
-        const float Ldist = length(light_pos - P);
-        const float3 L = normalize(light_pos - P);
-        const float nDl = dot(N, L);
-        const float LnDl = -dot(light.normal, L);
-
-        const float A = length(cross(light.v1, light.v2));
 
         float G = 0.0f;
         if (nDl > 0.0f && LnDl > 0.0f)
         {
-            const bool occluded =
-                traceOcclusion(
-                    params.handle,
-                    P,
-                    L,
-                    0.01f,          // tmin
-                    Ldist - 0.01f); // tmax
+            // weight = nDl * LnDl * A / (M_PIf * Ldist * Ldist);
 
-            if (!occluded)
-            {
-                // weight = nDl * LnDl * A / (M_PIf * Ldist * Ldist);
-
-                // light.emission is in radiance
-                G = nDl * LnDl / (Ldist * Ldist);
-            }
+            // light.emission is in radiance
+            G = nDl * LnDl / (Ldist * Ldist);
         }
 
         float3 f = light.emission * G;

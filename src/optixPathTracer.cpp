@@ -299,7 +299,7 @@ const std::array<float3, MAT_COUNT> g_diffuse_colors_gt =
       {0.80f, 0.05f, 0.05f},
       {0.50f, 0.00f, 0.00f}}};
 
-const std::array<float3, MAT_COUNT> g_diffuse_colors_init =
+std::array<float3, MAT_COUNT> g_diffuse_colors_init =
     {{{0.80f, 0.80f, 0.80f},
       {0.05f, 0.80f, 0.05f},
       {0.50f, 0.50f, 0.50f},
@@ -802,9 +802,8 @@ int main(int argc, char *argv[])
     state.params.height = 1080;
     sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::CUDA_DEVICE;
 
-    //
-    // Parse command line options
-    //
+    int ITERATIONS = 100;
+    float LEARNING_RATE = 1.0f;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -815,12 +814,44 @@ int main(int argc, char *argv[])
                 printUsageAndExit(argv[0]);
             samples_per_launch = atoi(argv[++i]);
         }
+        else if (arg == "--iterations" || arg == "-n")
+        {
+            if (i >= argc - 1)
+                printUsageAndExit(argv[0]);
+            ITERATIONS = atoi(argv[++i]);
+        }
+        else if (arg == "--learning-rate" || arg == "-l")
+        {
+            if (i >= argc - 1)
+                printUsageAndExit(argv[0]);
+            LEARNING_RATE = static_cast<float>(atof(argv[++i]));
+        }
         else
         {
             std::cerr << "Unknown option '" << argv[i] << "'\n";
             printUsageAndExit(argv[0]);
         }
     }
+
+    //
+    // Parse command line options
+    //
+
+    // for (int i = 1; i < argc; ++i)
+    // {
+    //     const std::string arg = argv[i];
+    //     if (arg == "--launch-samples" || arg == "-s")
+    //     {
+    //         if (i >= argc - 1)
+    //             printUsageAndExit(argv[0]);
+    //         samples_per_launch = atoi(argv[++i]);
+    //     }
+    //     else
+    //     {
+    //         std::cerr << "Unknown option '" << argv[i] << "'\n";
+    //         printUsageAndExit(argv[0]);
+    //     }
+    // }
 
     try
     {
@@ -837,75 +868,142 @@ int main(int argc, char *argv[])
         createSBT(state, g_emission_colors, g_diffuse_colors_gt, g_material_parameter_mask);
         initLaunchParams(state);
 
-        { // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
+        sutil::CUDAOutputBuffer<uchar4> output_buffer(
+            output_buffer_type,
+            state.params.width,
+            state.params.height);
+        sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
+            output_buffer_type,
+            state.params.width,
+            state.params.height);
 
-            sutil::CUDAOutputBuffer<uchar4> output_buffer(
-                output_buffer_type,
-                state.params.width,
-                state.params.height);
-            sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
-                output_buffer_type,
-                state.params.width,
-                state.params.height);
+        handleCameraUpdate(state.params);
+        handleResize(output_buffer, state.params);
+        handleResize(gradient_buffer, state.params);
+        launchSubframe(output_buffer, gradient_buffer, state);
 
-            handleCameraUpdate(state.params);
-            handleResize(output_buffer, state.params);
-            handleResize(gradient_buffer, state.params);
-            launchSubframe(output_buffer, gradient_buffer, state);
+        sutil::ImageBuffer buffer_init;
+        buffer_init.data = output_buffer.getHostPointer();
+        buffer_init.width = output_buffer.width();
+        buffer_init.height = output_buffer.height();
+        buffer_init.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
 
-            sutil::ImageBuffer buffer;
-            buffer.data = output_buffer.getHostPointer();
-            buffer.width = output_buffer.width();
-            buffer.height = output_buffer.height();
-            buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+        sutil::ImageBuffer gradient;
+        gradient.data = gradient_buffer.getHostPointer();
+        gradient.width = gradient_buffer.width();
+        gradient.height = gradient_buffer.height();
+        gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
 
-            sutil::ImageBuffer gradient;
-            gradient.data = gradient_buffer.getHostPointer();
-            gradient.width = gradient_buffer.width();
-            gradient.height = gradient_buffer.height();
-            gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+        std::string outfile("misc/output/I_gt.png");
+        sutil::saveImage(outfile.c_str(), buffer_init, false);
+        std::string outfile_grad("misc/output/I_gt_grad.png");
+        sutil::saveImage(outfile_grad.c_str(), gradient, false);
 
-            std::string outfile("I_gt.png");
-            sutil::saveImage(outfile.c_str(), buffer, false);
-            std::string outfile_grad("I_gt_grad.png");
-            sutil::saveImage(outfile_grad.c_str(), gradient, false);
-        }
+        for (int i = 0; i < ITERATIONS; i++)
+        {
+            createSBT(state, g_emission_colors, g_diffuse_colors_init, g_material_parameter_mask);
+            initLaunchParams(state);
 
-        createSBT(state, g_emission_colors, g_diffuse_colors_init, g_material_parameter_mask);
-        initLaunchParams(state);
+            { // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
 
-        { // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
+                sutil::CUDAOutputBuffer<uchar4> output_buffer(
+                    output_buffer_type,
+                    state.params.width,
+                    state.params.height);
+                sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
+                    output_buffer_type,
+                    state.params.width,
+                    state.params.height);
 
-            sutil::CUDAOutputBuffer<uchar4> output_buffer(
-                output_buffer_type,
-                state.params.width,
-                state.params.height);
-            sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
-                output_buffer_type,
-                state.params.width,
-                state.params.height);
+                handleCameraUpdate(state.params);
+                handleResize(output_buffer, state.params);
+                handleResize(gradient_buffer, state.params);
+                launchSubframe(output_buffer, gradient_buffer, state);
 
-            handleCameraUpdate(state.params);
-            handleResize(output_buffer, state.params);
-            handleResize(gradient_buffer, state.params);
-            launchSubframe(output_buffer, gradient_buffer, state);
+                sutil::ImageBuffer buffer;
+                buffer.data = output_buffer.getHostPointer();
+                buffer.width = output_buffer.width();
+                buffer.height = output_buffer.height();
+                buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
 
-            sutil::ImageBuffer buffer;
-            buffer.data = output_buffer.getHostPointer();
-            buffer.width = output_buffer.width();
-            buffer.height = output_buffer.height();
-            buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+                sutil::ImageBuffer gradient;
+                gradient.data = gradient_buffer.getHostPointer();
+                gradient.width = gradient_buffer.width();
+                gradient.height = gradient_buffer.height();
+                gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
 
-            sutil::ImageBuffer gradient;
-            gradient.data = gradient_buffer.getHostPointer();
-            gradient.width = gradient_buffer.width();
-            gradient.height = gradient_buffer.height();
-            gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+                double gradient_r = 0.0;
+                double gradient_g = 0.0;
+                double gradient_b = 0.0;
+                double loss = 0.0;
 
-            std::string outfile("I.png");
-            sutil::saveImage(outfile.c_str(), buffer, false);
-            std::string outfile_grad("I_grad.png");
-            sutil::saveImage(outfile_grad.c_str(), gradient, false);
+                for (unsigned int idx = 0; idx < state.params.width * state.params.height; ++idx)
+                {
+                    // std::cout << "#" << std::flush;
+                    const int32_t src_idx = 4 * idx;
+
+                    uint8_t u8_r_theta = reinterpret_cast<uint8_t *>(buffer.data)[src_idx + 0];
+                    uint8_t u8_g_theta = reinterpret_cast<uint8_t *>(buffer.data)[src_idx + 1];
+                    uint8_t u8_b_theta = reinterpret_cast<uint8_t *>(buffer.data)[src_idx + 2];
+                    uint8_t u8_r_init = reinterpret_cast<uint8_t *>(buffer_init.data)[src_idx + 0];
+                    uint8_t u8_g_init = reinterpret_cast<uint8_t *>(buffer_init.data)[src_idx + 1];
+                    uint8_t u8_b_init = reinterpret_cast<uint8_t *>(buffer_init.data)[src_idx + 2];
+                    uint8_t u8_r_grad = reinterpret_cast<uint8_t *>(gradient.data)[src_idx + 0];
+                    uint8_t u8_g_grad = reinterpret_cast<uint8_t *>(gradient.data)[src_idx + 1];
+                    uint8_t u8_b_grad = reinterpret_cast<uint8_t *>(gradient.data)[src_idx + 2];
+                    double r_theta = static_cast<double>(u8_r_theta) / 255.0;
+                    double g_theta = static_cast<double>(u8_g_theta) / 255.0;
+                    double b_theta = static_cast<double>(u8_b_theta) / 255.0;
+                    double r_init = static_cast<double>(u8_r_init) / 255.0;
+                    double g_init = static_cast<double>(u8_g_init) / 255.0;
+                    double b_init = static_cast<double>(u8_b_init) / 255.0;
+                    double r_grad = static_cast<double>(u8_r_grad) / 255.0;
+                    double g_grad = static_cast<double>(u8_g_grad) / 255.0;
+                    double b_grad = static_cast<double>(u8_b_grad) / 255.0;
+
+                    gradient_r += (r_theta - r_init) * r_grad;
+                    gradient_g += (g_theta - g_init) * g_grad;
+                    gradient_b += (b_theta - b_init) * b_grad;
+                    loss += (r_theta - r_init) * (r_theta - r_init);
+                    loss += (g_theta - g_init) * (g_theta - g_init);
+                    loss += (b_theta - b_init) * (b_theta - b_init);
+                }
+
+                std::cout << "Iteration " << i << " - Loss: " << loss
+                          << " | Gradient R: " << gradient_r
+                          << " G: " << gradient_g
+                          << " B: " << gradient_b << std::endl;
+
+                for (size_t i = 0; i < g_material_parameter_mask.size(); ++i)
+                {
+                    if (g_material_parameter_mask[i])
+                    {
+                        g_diffuse_colors_init[i].x -= LEARNING_RATE * static_cast<float>(gradient_r) / (state.params.width * state.params.height * 255.0f);
+                        g_diffuse_colors_init[i].y -= LEARNING_RATE * static_cast<float>(gradient_g) / (state.params.width * state.params.height * 255.0f);
+                        g_diffuse_colors_init[i].z -= LEARNING_RATE * static_cast<float>(gradient_b) / (state.params.width * state.params.height * 255.0f);
+                        g_diffuse_colors_init[i].x = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[i].x));
+                        g_diffuse_colors_init[i].y = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[i].y));
+                        g_diffuse_colors_init[i].z = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[i].z));
+                        std::cout << "Updated parameters to: "
+                                  << g_diffuse_colors_init[i].x << ", "
+                                  << g_diffuse_colors_init[i].y << ", "
+                                  << g_diffuse_colors_init[i].z << std::endl;
+
+                        float mse = ((g_diffuse_colors_init[i].x - g_diffuse_colors_gt[i].x) * (g_diffuse_colors_init[i].x - g_diffuse_colors_gt[i].x) +
+                                     (g_diffuse_colors_init[i].y - g_diffuse_colors_gt[i].y) * (g_diffuse_colors_init[i].y - g_diffuse_colors_gt[i].y) +
+                                     (g_diffuse_colors_init[i].z - g_diffuse_colors_gt[i].z) * (g_diffuse_colors_init[i].z - g_diffuse_colors_gt[i].z)) /
+                                    3.0f;
+                        std::cout << "Albedo MSE vs GT: " << mse << std::endl;
+
+                        break;
+                    }
+                }
+
+                std::string outfile("misc/output/I_" + std::to_string(i) + ".png");
+                sutil::saveImage(outfile.c_str(), buffer, false);
+                std::string outfile_grad("misc/output/I_grad_" + std::to_string(i) + ".png");
+                sutil::saveImage(outfile_grad.c_str(), gradient, false);
+            }
         }
 
         cleanupState(state);
