@@ -36,6 +36,9 @@
 #include <sutil/vec_math.h>
 #include <cuda/helpers.h>
 
+// for intellisense
+#include <optix_device.h>
+
 extern "C"
 {
     __constant__ Params params;
@@ -95,6 +98,15 @@ static __forceinline__ __device__ RadiancePRD loadClosesthitRadiancePRD()
     prd.attenuation.z = __uint_as_float(optixGetPayload_2());
     prd.seed = optixGetPayload_3();
     prd.depth = optixGetPayload_4();
+    // >> prd.pdf
+    // >> prd.gradients
+    // >> prd.num_params_hit
+    prd.pdf = __uint_as_float(optixGetPayload_5());
+    prd.gradients.x = __uint_as_float(optixGetPayload_6());
+    prd.gradients.y = __uint_as_float(optixGetPayload_7());
+    prd.gradients.z = __uint_as_float(optixGetPayload_8());
+    prd.num_params_hit = __uint_as_float(optixGetPayload_9());
+
     return prd;
 }
 
@@ -113,36 +125,45 @@ static __forceinline__ __device__ void storeClosesthitRadiancePRD(RadiancePRD pr
     optixSetPayload_3(prd.seed);
     optixSetPayload_4(prd.depth);
 
-    optixSetPayload_5(__float_as_uint(prd.emitted.x));
-    optixSetPayload_6(__float_as_uint(prd.emitted.y));
-    optixSetPayload_7(__float_as_uint(prd.emitted.z));
+    // >> prd.pdf
+    // >> prd.gradients
+    // >> prd.num_params_hit
+    optixSetPayload_5(__float_as_uint(prd.pdf));
+    optixSetPayload_6(__float_as_uint(prd.gradients.x));
+    optixSetPayload_7(__float_as_uint(prd.gradients.y));
+    optixSetPayload_8(__float_as_uint(prd.gradients.z));
+    optixSetPayload_9(__float_as_uint(prd.num_params_hit));
 
-    optixSetPayload_8(__float_as_uint(prd.radiance.x));
-    optixSetPayload_9(__float_as_uint(prd.radiance.y));
-    optixSetPayload_10(__float_as_uint(prd.radiance.z));
+    optixSetPayload_10(__float_as_uint(prd.emitted.x));
+    optixSetPayload_11(__float_as_uint(prd.emitted.y));
+    optixSetPayload_12(__float_as_uint(prd.emitted.z));
 
-    optixSetPayload_11(__float_as_uint(prd.origin.x));
-    optixSetPayload_12(__float_as_uint(prd.origin.y));
-    optixSetPayload_13(__float_as_uint(prd.origin.z));
+    optixSetPayload_13(__float_as_uint(prd.radiance.x));
+    optixSetPayload_14(__float_as_uint(prd.radiance.y));
+    optixSetPayload_15(__float_as_uint(prd.radiance.z));
 
-    optixSetPayload_14(__float_as_uint(prd.direction.x));
-    optixSetPayload_15(__float_as_uint(prd.direction.y));
-    optixSetPayload_16(__float_as_uint(prd.direction.z));
+    optixSetPayload_16(__float_as_uint(prd.origin.x));
+    optixSetPayload_17(__float_as_uint(prd.origin.y));
+    optixSetPayload_18(__float_as_uint(prd.origin.z));
 
-    optixSetPayload_17(prd.done);
+    optixSetPayload_19(__float_as_uint(prd.direction.x));
+    optixSetPayload_20(__float_as_uint(prd.direction.y));
+    optixSetPayload_21(__float_as_uint(prd.direction.z));
+
+    optixSetPayload_22(prd.done);
 }
 
 static __forceinline__ __device__ void storeMissRadiancePRD(RadiancePRD prd)
 {
-    optixSetPayload_5(__float_as_uint(prd.emitted.x));
-    optixSetPayload_6(__float_as_uint(prd.emitted.y));
-    optixSetPayload_7(__float_as_uint(prd.emitted.z));
+    optixSetPayload_10(__float_as_uint(prd.emitted.x));
+    optixSetPayload_11(__float_as_uint(prd.emitted.y));
+    optixSetPayload_12(__float_as_uint(prd.emitted.z));
 
-    optixSetPayload_8(__float_as_uint(prd.radiance.x));
-    optixSetPayload_9(__float_as_uint(prd.radiance.y));
-    optixSetPayload_10(__float_as_uint(prd.radiance.z));
+    optixSetPayload_13(__float_as_uint(prd.radiance.x));
+    optixSetPayload_14(__float_as_uint(prd.radiance.y));
+    optixSetPayload_15(__float_as_uint(prd.radiance.z));
 
-    optixSetPayload_17(prd.done);
+    optixSetPayload_22(prd.done);
 }
 
 static __forceinline__ __device__ void cosine_sample_hemisphere(const float u1, const float u2, float3 &p)
@@ -157,6 +178,16 @@ static __forceinline__ __device__ void cosine_sample_hemisphere(const float u1, 
     p.z = sqrtf(fmaxf(0.0f, 1.0f - p.x * p.x - p.y * p.y));
 }
 
+static __forceinline__ __device__ void basic_sample_hemisphere(const float u1, const float u2, float3 &p)
+{
+    const float z = u1; // uniform in [0,1]
+    const float r = sqrtf(fmaxf(0.0f, 1.0f - z * z));
+    const float phi = 2.0f * M_PIf * u2;
+    p.x = r * cosf(phi);
+    p.y = r * sinf(phi);
+    p.z = z;
+}
+
 static __forceinline__ __device__ void traceRadiance(
     OptixTraversableHandle handle,
     float3 ray_origin,
@@ -165,13 +196,18 @@ static __forceinline__ __device__ void traceRadiance(
     float tmax,
     RadiancePRD &prd)
 {
-    unsigned int u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17;
+    unsigned int u0, u1, u2, u3, u4, u_pdf, u_grad0, u_grad1, u_grad2, u_params_hit, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17;
 
     u0 = __float_as_uint(prd.attenuation.x);
     u1 = __float_as_uint(prd.attenuation.y);
     u2 = __float_as_uint(prd.attenuation.z);
     u3 = prd.seed;
     u4 = prd.depth;
+    u_pdf = __float_as_uint(prd.pdf);
+    u_grad0 = __float_as_uint(prd.gradients.x);
+    u_grad1 = __float_as_uint(prd.gradients.y);
+    u_grad2 = __float_as_uint(prd.gradients.z);
+    u_params_hit = prd.num_params_hit;
 
     // Note:
     // This demonstrates the usage of the OptiX shader execution reordering
@@ -191,17 +227,21 @@ static __forceinline__ __device__ void traceRadiance(
         0,              // SBT offset
         RAY_TYPE_COUNT, // SBT stride
         0,              // missSBTIndex
-        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
+        u0, u1, u2, u3, u4, u_pdf, u_grad0, u_grad1, u_grad2, u_params_hit, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
     optixReorder(
         // Application specific coherence hints could be passed in here
     );
 
-    optixInvoke(PAYLOAD_TYPE_RADIANCE,
-                u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
+    optixInvoke(
+        PAYLOAD_TYPE_RADIANCE,
+        u0, u1, u2, u3, u4, u_pdf, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
 
     prd.attenuation = make_float3(__uint_as_float(u0), __uint_as_float(u1), __uint_as_float(u2));
     prd.seed = u3;
     prd.depth = u4;
+    prd.pdf = __uint_as_float(u_pdf);
+    prd.gradients = make_float3(__uint_as_float(u_grad0), __uint_as_float(u_grad1), __uint_as_float(u_grad2));
+    prd.num_params_hit = u_params_hit;
 
     prd.emitted = make_float3(__uint_as_float(u5), __uint_as_float(u6), __uint_as_float(u7));
     prd.radiance = make_float3(__uint_as_float(u8), __uint_as_float(u9), __uint_as_float(u10));
@@ -254,6 +294,7 @@ extern "C" __global__ void __raygen__rg()
     unsigned int seed = tea<4>(idx.y * w + idx.x, subframe_index);
 
     float3 result = make_float3(0.0f);
+    float3 result_grads = make_float3(0.0f);
     int i = params.samples_per_launch;
     do
     {
@@ -268,9 +309,12 @@ extern "C" __global__ void __raygen__rg()
         float3 ray_origin = eye;
 
         RadiancePRD prd;
-        prd.attenuation = make_float3(1.f);
+        prd.attenuation = make_float3(1.f); // TODO: vignetting
         prd.seed = seed;
         prd.depth = 0;
+        prd.pdf = 1.0f;
+        prd.gradients = make_float3(1.f); // TODO: vignetting
+        prd.num_params_hit = 0;
 
         for (;;)
         {
@@ -282,34 +326,48 @@ extern "C" __global__ void __raygen__rg()
                 1e16f, // tmax
                 prd);
 
-            result += prd.emitted;
-            result += prd.radiance * prd.attenuation;
+            result += prd.emitted;                              // for primary rays directly hitting emissive sources (bypassing all the PDFs)
+            result += prd.radiance * prd.attenuation / prd.pdf; // only non-zero at when it's done, hence we can divide pdf here
 
-            const float p = dot(prd.attenuation, make_float3(0.30f, 0.59f, 0.11f));
-            const bool done = prd.done || rnd(prd.seed) > p;
-            if (done)
-                break;
-            prd.attenuation /= p;
+            // this is just used for Russian roulette calculation
+            //                                    perceived brightness / luminance
+            // const float p = dot(prd.attenuation, make_float3(0.30f, 0.59f, 0.11f));
+            const bool done = prd.done; // || rnd(prd.seed) > p;
+
+            // if (done)
+            break;
+
+            // prd.attenuation /= p;
 
             ray_origin = prd.origin;
             ray_direction = prd.direction;
 
             ++prd.depth;
         }
+        float r = powf(params.parameter.x, prd.num_params_hit - 1);
+        float g = powf(params.parameter.y, prd.num_params_hit - 1);
+        float b = powf(params.parameter.z, prd.num_params_hit - 1);
+        result_grads += prd.gradients / prd.pdf * prd.num_params_hit * make_float3(r, g, b);
     } while (--i);
 
     const uint3 launch_index = optixGetLaunchIndex();
     const unsigned int image_index = launch_index.y * params.width + launch_index.x;
     float3 accum_color = result / static_cast<float>(params.samples_per_launch);
 
-    if (subframe_index > 0)
-    {
-        const float a = 1.0f / static_cast<float>(subframe_index + 1);
-        const float3 accum_color_prev = make_float3(params.accum_buffer[image_index]);
-        accum_color = lerp(accum_color_prev, accum_color, a);
-    }
+    float3 accum_gradients = result_grads / static_cast<float>(params.samples_per_launch);
+
+    // subframe index is used when you're sampling again and again to get better result over time
+    // different to what we want
+
+    // if (subframe_index > 0)
+    // {
+    //     const float a = 1.0f / static_cast<float>(subframe_index + 1);
+    //     const float3 accum_color_prev = make_float3(params.accum_buffer[image_index]);
+    //     accum_color = lerp(accum_color_prev, accum_color, a);
+    // }
     params.accum_buffer[image_index] = make_float4(accum_color, 1.0f);
     params.frame_buffer[image_index] = make_color(accum_color);
+    params.gradient_buffer[image_index] = make_color(accum_gradients);
 }
 
 extern "C" __global__ void __miss__radiance()
@@ -319,7 +377,7 @@ extern "C" __global__ void __miss__radiance()
     MissData *rt_data = reinterpret_cast<MissData *>(optixGetSbtDataPointer());
     RadiancePRD prd = loadMissRadiancePRD();
 
-    prd.radiance = make_float3(rt_data->bg_color);
+    prd.radiance = make_float3(rt_data->bg_color); // keep 0; not sure if PDFs are needed for this
     prd.emitted = make_float3(0.f);
     prd.done = true;
 
@@ -339,12 +397,18 @@ extern "C" __global__ void __closesthit__radiance()
     const float3 v0 = make_float3(rt_data->vertices[vert_idx_offset + 0]);
     const float3 v1 = make_float3(rt_data->vertices[vert_idx_offset + 1]);
     const float3 v2 = make_float3(rt_data->vertices[vert_idx_offset + 2]);
+    const bool is_parameter = rt_data->is_parameter;
     const float3 N_0 = normalize(cross(v1 - v0, v2 - v0));
 
     const float3 N = faceforward(N_0, -ray_dir, N_0);
     const float3 P = optixGetWorldRayOrigin() + optixGetRayTmax() * ray_dir;
 
     RadiancePRD prd = loadClosesthitRadiancePRD();
+
+    if (is_parameter)
+    {
+        prd.num_params_hit += 1;
+    }
 
     if (prd.depth == 0)
         prd.emitted = rt_data->emission_color;
@@ -357,13 +421,20 @@ extern "C" __global__ void __closesthit__radiance()
         const float z2 = rnd(seed);
 
         float3 w_in;
-        cosine_sample_hemisphere(z1, z2, w_in);
+        basic_sample_hemisphere(z1, z2, w_in);
         Onb onb(N);
         onb.inverse_transform(w_in);
         prd.direction = w_in;
         prd.origin = P;
 
-        prd.attenuation *= rt_data->diffuse_color;
+        float cos_theta = dot(w_in, N);
+        float3 f = rt_data->diffuse_color / M_PIf * cos_theta;
+        prd.attenuation *= f;
+
+        if (!is_parameter)
+            prd.gradients *= f;
+
+        prd.pdf *= 1 / (2 * M_PIf);
     }
 
     const float z1 = rnd(seed);
@@ -371,34 +442,58 @@ extern "C" __global__ void __closesthit__radiance()
     prd.seed = seed;
 
     ParallelogramLight light = params.light;
-    const float3 light_pos = light.corner + light.v1 * z1 + light.v2 * z2;
 
-    // Calculate properties of light sample (for area based pdf)
-    const float Ldist = length(light_pos - P);
-    const float3 L = normalize(light_pos - P);
-    const float nDl = dot(N, L);
-    const float LnDl = -dot(light.normal, L);
+    // light sampling only when the final depth is reached
 
-    float weight = 0.0f;
-    if (nDl > 0.0f && LnDl > 0.0f)
+    //           MAX DEPTH
+    if (prd.depth == 20)
     {
-        const bool occluded =
-            traceOcclusion(
-                params.handle,
-                P,
-                L,
-                0.01f,          // tmin
-                Ldist - 0.01f); // tmax
 
-        if (!occluded)
+        const float3 light_pos = light.corner + light.v1 * z1 + light.v2 * z2;
+
+        // Calculate properties of light sample (for area based pdf)
+        const float Ldist = length(light_pos - P);
+        const float3 L = normalize(light_pos - P);
+        const float nDl = dot(N, L);
+        const float LnDl = -dot(light.normal, L);
+
+        const float A = length(cross(light.v1, light.v2));
+
+        float G = 0.0f;
+        if (nDl > 0.0f && LnDl > 0.0f)
         {
-            const float A = length(cross(light.v1, light.v2));
-            weight = nDl * LnDl * A / (M_PIf * Ldist * Ldist);
-        }
-    }
+            const bool occluded =
+                traceOcclusion(
+                    params.handle,
+                    P,
+                    L,
+                    0.01f,          // tmin
+                    Ldist - 0.01f); // tmax
 
-    prd.radiance = light.emission * weight;
-    prd.done = false;
+            if (!occluded)
+            {
+                // weight = nDl * LnDl * A / (M_PIf * Ldist * Ldist);
+
+                // light.emission is in radiance
+                G = nDl * LnDl / (Ldist * Ldist);
+            }
+        }
+
+        float3 f = light.emission * G;
+        prd.radiance = f;
+
+        // if (!is_parameter)
+        // assume the light is never the parameter (for now)
+        prd.gradients *= f;
+
+        prd.pdf *= 1.0f / A;
+        prd.done = true;
+    }
+    else
+    {
+        prd.radiance = light.emission * 0.0f;
+        prd.done = false;
+    }
 
     storeClosesthitRadiancePRD(prd);
 }

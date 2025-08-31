@@ -291,9 +291,7 @@ const std::array<float3, MAT_COUNT> g_emission_colors =
     {{{0.0f, 0.0f, 0.0f},
       {0.0f, 0.0f, 0.0f},
       {0.0f, 0.0f, 0.0f},
-      {15.0f, 15.0f, 5.0f}
-
-    }};
+      {1.0f, 1.0f, 0.33333f}}}; //   {1.0f, 1.0f, 0.33333f} //  {15.0f, 15.0f, 5.0f},
 
 const std::array<float3, MAT_COUNT> g_diffuse_colors_gt =
     {{{0.80f, 0.80f, 0.80f},
@@ -303,9 +301,15 @@ const std::array<float3, MAT_COUNT> g_diffuse_colors_gt =
 
 const std::array<float3, MAT_COUNT> g_diffuse_colors_init =
     {{{0.80f, 0.80f, 0.80f},
-      {0.80f, 0.80f, 0.80f},
-      {0.80f, 0.80f, 0.80f},
+      {0.05f, 0.80f, 0.05f},
+      {0.50f, 0.50f, 0.50f},
       {0.50f, 0.00f, 0.00f}}};
+
+const std::array<bool, MAT_COUNT> g_material_parameter_mask =
+    {{false,
+      false,
+      true,
+      false}};
 
 //------------------------------------------------------------------------------
 //
@@ -330,7 +334,8 @@ void initLaunchParams(PathTracerState &state)
     CUDA_CHECK(cudaMalloc(
         reinterpret_cast<void **>(&state.params.accum_buffer),
         state.params.width * state.params.height * sizeof(float4)));
-    state.params.frame_buffer = nullptr; // Will be set when output buffer is mapped
+    state.params.frame_buffer = nullptr;    // Will be set when output buffer is mapped
+    state.params.gradient_buffer = nullptr; // Will be set when output buffer is mapped
 
     state.params.samples_per_launch = samples_per_launch;
     state.params.subframe_index = 0u;
@@ -341,6 +346,15 @@ void initLaunchParams(PathTracerState &state)
     state.params.light.v2 = make_float3(-130.0f, 0.0f, 0.0f);
     state.params.light.normal = normalize(cross(state.params.light.v1, state.params.light.v2));
     state.params.handle = state.gas_handle;
+
+    for (size_t i = 0; i < g_material_parameter_mask.size(); ++i)
+    {
+        if (g_material_parameter_mask[i])
+        {
+            state.params.parameter = g_diffuse_colors_init[i];
+            break;
+        }
+    }
 
     CUDA_CHECK(cudaStreamCreate(&state.stream));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void **>(&state.d_params), sizeof(Params)));
@@ -382,11 +396,14 @@ void updateState(sutil::CUDAOutputBuffer<uchar4> &output_buffer, Params &params)
     handleResize(output_buffer, params);
 }
 
-void launchSubframe(sutil::CUDAOutputBuffer<uchar4> &output_buffer, PathTracerState &state)
+void launchSubframe(sutil::CUDAOutputBuffer<uchar4> &output_buffer, sutil::CUDAOutputBuffer<uchar4> &gradient_buffer, PathTracerState &state)
 {
     // Launch
     uchar4 *result_buffer_data = output_buffer.map();
+    uchar4 *gradient_buffer_data = gradient_buffer.map();
     state.params.frame_buffer = result_buffer_data;
+    state.params.gradient_buffer = gradient_buffer_data;
+
     CUDA_CHECK(cudaMemcpyAsync(
         reinterpret_cast<void *>(state.d_params),
         &state.params, sizeof(Params),
@@ -403,21 +420,8 @@ void launchSubframe(sutil::CUDAOutputBuffer<uchar4> &output_buffer, PathTracerSt
         1                    // launch depth
         ));
     output_buffer.unmap();
+    gradient_buffer.unmap();
     CUDA_SYNC_CHECK();
-}
-
-void displaySubframe(sutil::CUDAOutputBuffer<uchar4> &output_buffer, sutil::GLDisplay &gl_display, GLFWwindow *window)
-{
-    // Display
-    int framebuf_res_x = 0; // The display's resolution (could be HDPI res)
-    int framebuf_res_y = 0; //
-    glfwGetFramebufferSize(window, &framebuf_res_x, &framebuf_res_y);
-    gl_display.display(
-        output_buffer.width(),
-        output_buffer.height(),
-        framebuf_res_x,
-        framebuf_res_y,
-        output_buffer.getPBO());
 }
 
 static void context_log_cb(unsigned int level, const char *tag, const char *message, void * /*cbdata */)
@@ -700,7 +704,7 @@ void createPipeline(PathTracerState &state)
         max_traversal_depth));
 }
 
-void createSBT(PathTracerState &state, const std::array<float3, MAT_COUNT> &d_emission_colors, const std::array<float3, MAT_COUNT> &d_diffuse_colors)
+void createSBT(PathTracerState &state, const std::array<float3, MAT_COUNT> &d_emission_colors, const std::array<float3, MAT_COUNT> &d_diffuse_colors, const std::array<bool, MAT_COUNT> &d_material_parameter_mask)
 {
     CUdeviceptr d_raygen_record;
     const size_t raygen_record_size = sizeof(RayGenRecord);
@@ -744,6 +748,7 @@ void createSBT(PathTracerState &state, const std::array<float3, MAT_COUNT> &d_em
             OPTIX_CHECK(optixSbtRecordPackHeader(state.radiance_hit_group, &hitgroup_records[sbt_idx]));
             hitgroup_records[sbt_idx].data.emission_color = d_emission_colors[i];
             hitgroup_records[sbt_idx].data.diffuse_color = d_diffuse_colors[i];
+            hitgroup_records[sbt_idx].data.is_parameter = d_material_parameter_mask[i];
             hitgroup_records[sbt_idx].data.vertices = reinterpret_cast<float4 *>(state.d_vertices);
         }
 
@@ -829,7 +834,7 @@ int main(int argc, char *argv[])
         createModule(state);
         createProgramGroups(state);
         createPipeline(state);
-        createSBT(state, g_emission_colors, g_diffuse_colors_gt);
+        createSBT(state, g_emission_colors, g_diffuse_colors_gt, g_material_parameter_mask);
         initLaunchParams(state);
 
         { // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
@@ -838,22 +843,35 @@ int main(int argc, char *argv[])
                 output_buffer_type,
                 state.params.width,
                 state.params.height);
+            sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
+                output_buffer_type,
+                state.params.width,
+                state.params.height);
 
             handleCameraUpdate(state.params);
             handleResize(output_buffer, state.params);
-            launchSubframe(output_buffer, state);
+            handleResize(gradient_buffer, state.params);
+            launchSubframe(output_buffer, gradient_buffer, state);
 
             sutil::ImageBuffer buffer;
             buffer.data = output_buffer.getHostPointer();
             buffer.width = output_buffer.width();
             buffer.height = output_buffer.height();
             buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+
+            sutil::ImageBuffer gradient;
+            gradient.data = gradient_buffer.getHostPointer();
+            gradient.width = gradient_buffer.width();
+            gradient.height = gradient_buffer.height();
+            gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
 
             std::string outfile("I_gt.png");
             sutil::saveImage(outfile.c_str(), buffer, false);
+            std::string outfile_grad("I_gt_grad.png");
+            sutil::saveImage(outfile_grad.c_str(), gradient, false);
         }
 
-        createSBT(state, g_emission_colors, g_diffuse_colors_init);
+        createSBT(state, g_emission_colors, g_diffuse_colors_init, g_material_parameter_mask);
         initLaunchParams(state);
 
         { // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
@@ -862,10 +880,15 @@ int main(int argc, char *argv[])
                 output_buffer_type,
                 state.params.width,
                 state.params.height);
+            sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
+                output_buffer_type,
+                state.params.width,
+                state.params.height);
 
             handleCameraUpdate(state.params);
             handleResize(output_buffer, state.params);
-            launchSubframe(output_buffer, state);
+            handleResize(gradient_buffer, state.params);
+            launchSubframe(output_buffer, gradient_buffer, state);
 
             sutil::ImageBuffer buffer;
             buffer.data = output_buffer.getHostPointer();
@@ -873,8 +896,16 @@ int main(int argc, char *argv[])
             buffer.height = output_buffer.height();
             buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
 
+            sutil::ImageBuffer gradient;
+            gradient.data = gradient_buffer.getHostPointer();
+            gradient.width = gradient_buffer.width();
+            gradient.height = gradient_buffer.height();
+            gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+
             std::string outfile("I.png");
             sutil::saveImage(outfile.c_str(), buffer, false);
+            std::string outfile_grad("I_grad.png");
+            sutil::saveImage(outfile_grad.c_str(), gradient, false);
         }
 
         cleanupState(state);

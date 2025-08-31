@@ -41,6 +41,9 @@ struct RadiancePRD
     float3 attenuation;
     unsigned int seed;
     int depth;
+    float pdf;
+    float3 gradients;
+    unsigned int num_params_hit;
 
     // these are produced by CH and MS, and consumed by the caller after trace returned.
     float3 emitted;
@@ -50,7 +53,7 @@ struct RadiancePRD
     int done;
 };
 
-const unsigned int radiancePayloadSemantics[18] =
+const unsigned int radiancePayloadSemantics[23] =
     {
         // RadiancePRD::attenuation
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
@@ -59,6 +62,14 @@ const unsigned int radiancePayloadSemantics[18] =
         // RadiancePRD::seed
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
         // RadiancePRD::depth
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        // RadiancePRD::pdf
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        // RadiancePRD::gradients
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        // RadiancePRD::num_params_hit
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
         // RadiancePRD::emitted
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ | OPTIX_PAYLOAD_SEMANTICS_CH_WRITE | OPTIX_PAYLOAD_SEMANTICS_MS_WRITE,
@@ -92,6 +103,7 @@ struct Params
     unsigned int subframe_index;
     float4 *accum_buffer;
     uchar4 *frame_buffer;
+    uchar4 *gradient_buffer;
     unsigned int width;
     unsigned int height;
     unsigned int samples_per_launch;
@@ -103,6 +115,8 @@ struct Params
 
     ParallelogramLight light; // TODO: make light list
     OptixTraversableHandle handle;
+
+    float3 parameter;
 };
 
 struct RayGenData
@@ -118,5 +132,6 @@ struct HitGroupData
 {
     float3 emission_color;
     float3 diffuse_color;
+    bool is_parameter;
     float4 *vertices;
 };
