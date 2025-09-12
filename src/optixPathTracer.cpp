@@ -61,6 +61,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 bool resize_dirty = false;
 bool minimized = false;
@@ -73,14 +74,63 @@ sutil::Trackball trackball;
 // Mouse state
 int32_t mouse_button = -1;
 
-int32_t samples_per_launch = 16;
-
 //------------------------------------------------------------------------------
 //
 // Local types
 // TODO: some of these should move to sutil or optix util header
 //
 //------------------------------------------------------------------------------
+
+struct RenderResult
+{
+    std::vector<uchar4> color_data;
+    std::vector<uchar4> gradient_data;
+    std::vector<float4> color_radiance_data;
+    std::vector<float4> gradient_radiance_data;
+    int width;
+    int height;
+
+    // Helper functions to create ImageBuffer objects for saving
+    sutil::ImageBuffer getColorBuffer() const
+    {
+        sutil::ImageBuffer buffer;
+        buffer.data = const_cast<void *>(static_cast<const void *>(color_data.data()));
+        buffer.width = width;
+        buffer.height = height;
+        buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+        return buffer;
+    }
+
+    sutil::ImageBuffer getGradientBuffer() const
+    {
+        sutil::ImageBuffer buffer;
+        buffer.data = const_cast<void *>(static_cast<const void *>(gradient_data.data()));
+        buffer.width = width;
+        buffer.height = height;
+        buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+        return buffer;
+    }
+
+    sutil::ImageBuffer getColorRadianceBuffer() const
+    {
+        sutil::ImageBuffer buffer;
+        buffer.data = const_cast<void *>(static_cast<const void *>(color_radiance_data.data()));
+        buffer.width = width;
+        buffer.height = height;
+        buffer.pixel_format = sutil::BufferImageFormat::FLOAT4;
+        return buffer;
+    }
+
+    sutil::ImageBuffer getGradientRadianceBuffer() const
+    {
+        sutil::ImageBuffer buffer;
+        buffer.data = const_cast<void *>(static_cast<const void *>(gradient_radiance_data.data()));
+        buffer.width = width;
+        buffer.height = height;
+        buffer.pixel_format = sutil::BufferImageFormat::FLOAT4;
+        return buffer;
+    }
+};
 
 template <typename T>
 struct Record
@@ -329,16 +379,18 @@ void printUsageAndExit(const char *argv0)
     exit(0);
 }
 
-void initLaunchParams(PathTracerState &state)
+void initLaunchParams(PathTracerState &state, int32_t samples_per_launch)
 {
     CUDA_CHECK(cudaMalloc(
         reinterpret_cast<void **>(&state.params.accum_buffer),
         state.params.width * state.params.height * sizeof(float4)));
-    state.params.frame_buffer = nullptr;    // Will be set when output buffer is mapped
-    state.params.gradient_buffer = nullptr; // Will be set when output buffer is mapped
+    state.params.frame_buffer = nullptr;             // Will be set when output buffer is mapped
+    state.params.gradient_buffer = nullptr;          // Will be set when output buffer is mapped
+    state.params.frame_buffer_radiance = nullptr;    // Will be set when output buffer is mapped
+    state.params.gradient_buffer_radiance = nullptr; // Will be set when output buffer is mapped
 
     state.params.samples_per_launch = samples_per_launch;
-    state.params.subframe_index = 0u;
+    state.params.launch_seed = 0u;
 
     state.params.light.emission = make_float3(15.0f, 15.0f, 5.0f);
     state.params.light.corner = make_float3(343.0f, 548.5f, 227.0f);
@@ -390,19 +442,28 @@ void updateState(sutil::CUDAOutputBuffer<uchar4> &output_buffer, Params &params)
 {
     // Update params on device
     if (camera_changed || resize_dirty)
-        params.subframe_index = 0;
+        params.launch_seed = 0;
 
     handleCameraUpdate(params);
     handleResize(output_buffer, params);
 }
 
-void launchSubframe(sutil::CUDAOutputBuffer<uchar4> &output_buffer, sutil::CUDAOutputBuffer<uchar4> &gradient_buffer, PathTracerState &state)
+void launchSubframe(
+    sutil::CUDAOutputBuffer<uchar4> &output_buffer,
+    sutil::CUDAOutputBuffer<uchar4> &gradient_buffer,
+    sutil::CUDAOutputBuffer<float4> &color_buffer_radiance,
+    sutil::CUDAOutputBuffer<float4> &gradient_buffer_radiance,
+    PathTracerState &state)
 {
     // Launch
     uchar4 *result_buffer_data = output_buffer.map();
     uchar4 *gradient_buffer_data = gradient_buffer.map();
+    float4 *radiance_buffer_data = color_buffer_radiance.map();
+    float4 *gradient_radiance_buffer_data = gradient_buffer_radiance.map();
     state.params.frame_buffer = result_buffer_data;
     state.params.gradient_buffer = gradient_buffer_data;
+    state.params.frame_buffer_radiance = radiance_buffer_data;
+    state.params.gradient_buffer_radiance = gradient_radiance_buffer_data;
 
     CUDA_CHECK(cudaMemcpyAsync(
         reinterpret_cast<void *>(state.d_params),
@@ -421,6 +482,8 @@ void launchSubframe(sutil::CUDAOutputBuffer<uchar4> &output_buffer, sutil::CUDAO
         ));
     output_buffer.unmap();
     gradient_buffer.unmap();
+    color_buffer_radiance.unmap();
+    gradient_buffer_radiance.unmap();
     CUDA_SYNC_CHECK();
 }
 
@@ -771,6 +834,46 @@ void createSBT(PathTracerState &state, const std::array<float3, MAT_COUNT> &d_em
     state.sbt.hitgroupRecordCount = RAY_TYPE_COUNT * MAT_COUNT;
 }
 
+RenderResult render(PathTracerState &state, sutil::CUDAOutputBufferType output_buffer_type, int seed = 0)
+{
+    sutil::CUDAOutputBuffer<uchar4> output_buffer(output_buffer_type, state.params.width, state.params.height);
+    sutil::CUDAOutputBuffer<uchar4> gradient_buffer(output_buffer_type, state.params.width, state.params.height);
+    sutil::CUDAOutputBuffer<float4> color_buffer_radiance(output_buffer_type, state.params.width, state.params.height);
+    sutil::CUDAOutputBuffer<float4> gradient_buffer_radiance(output_buffer_type, state.params.width, state.params.height);
+
+    state.params.launch_seed = seed;
+
+    handleCameraUpdate(state.params);
+    handleResize(output_buffer, state.params);
+    handleResize(gradient_buffer, state.params);
+    launchSubframe(output_buffer, gradient_buffer, color_buffer_radiance, gradient_buffer_radiance, state);
+
+    // Copy data to avoid dangling pointers
+    RenderResult result;
+    result.width = output_buffer.width();
+    result.height = output_buffer.height();
+
+    const size_t pixel_count = result.width * result.height;
+
+    // Copy uchar4 color data
+    result.color_data.resize(pixel_count);
+    std::memcpy(result.color_data.data(), output_buffer.getHostPointer(), pixel_count * sizeof(uchar4));
+
+    // Copy uchar4 gradient data
+    result.gradient_data.resize(pixel_count);
+    std::memcpy(result.gradient_data.data(), gradient_buffer.getHostPointer(), pixel_count * sizeof(uchar4));
+
+    // Copy float4 color radiance data
+    result.color_radiance_data.resize(pixel_count);
+    std::memcpy(result.color_radiance_data.data(), color_buffer_radiance.getHostPointer(), pixel_count * sizeof(float4));
+
+    // Copy float4 gradient radiance data
+    result.gradient_radiance_data.resize(pixel_count);
+    std::memcpy(result.gradient_radiance_data.data(), gradient_buffer_radiance.getHostPointer(), pixel_count * sizeof(float4));
+
+    return result;
+}
+
 void cleanupState(PathTracerState &state)
 {
     OPTIX_CHECK(optixPipelineDestroy(state.pipeline));
@@ -803,7 +906,8 @@ int main(int argc, char *argv[])
     sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::CUDA_DEVICE;
 
     int ITERATIONS = 100;
-    float LEARNING_RATE = 1.0f;
+    float LEARNING_RATE = 0.1f;
+    int32_t SAMPLES_PER_LAUNCH = 16;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -812,7 +916,7 @@ int main(int argc, char *argv[])
         {
             if (i >= argc - 1)
                 printUsageAndExit(argv[0]);
-            samples_per_launch = atoi(argv[++i]);
+            SAMPLES_PER_LAUNCH = atoi(argv[++i]);
         }
         else if (arg == "--iterations" || arg == "-n")
         {
@@ -865,145 +969,104 @@ int main(int argc, char *argv[])
         createModule(state);
         createProgramGroups(state);
         createPipeline(state);
+
         createSBT(state, g_emission_colors, g_diffuse_colors_gt, g_material_parameter_mask);
-        initLaunchParams(state);
 
-        sutil::CUDAOutputBuffer<uchar4> output_buffer(
-            output_buffer_type,
-            state.params.width,
-            state.params.height);
-        sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
-            output_buffer_type,
-            state.params.width,
-            state.params.height);
+        // Clear the loss file at the start of the program
+        std::ofstream loss_file_clear("misc/output/loss.txt", std::ios::trunc);
+        if (loss_file_clear.is_open())
+        {
+            loss_file_clear.close();
+        }
 
-        handleCameraUpdate(state.params);
-        handleResize(output_buffer, state.params);
-        handleResize(gradient_buffer, state.params);
-        launchSubframe(output_buffer, gradient_buffer, state);
-
-        sutil::ImageBuffer buffer_init;
-        buffer_init.data = output_buffer.getHostPointer();
-        buffer_init.width = output_buffer.width();
-        buffer_init.height = output_buffer.height();
-        buffer_init.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
-
-        sutil::ImageBuffer gradient;
-        gradient.data = gradient_buffer.getHostPointer();
-        gradient.width = gradient_buffer.width();
-        gradient.height = gradient_buffer.height();
-        gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+        // Generate ground truth
+        initLaunchParams(state, 128);
+        auto gt_result = render(state, output_buffer_type, 0);
 
         std::string outfile("misc/output/I_gt.png");
-        sutil::saveImage(outfile.c_str(), buffer_init, false);
+        sutil::saveImage(outfile.c_str(), gt_result.getColorBuffer(), false);
         std::string outfile_grad("misc/output/I_gt_grad.png");
-        sutil::saveImage(outfile_grad.c_str(), gradient, false);
+        sutil::saveImage(outfile_grad.c_str(), gt_result.getGradientBuffer(), false);
 
         for (int i = 0; i < ITERATIONS; i++)
         {
             createSBT(state, g_emission_colors, g_diffuse_colors_init, g_material_parameter_mask);
-            initLaunchParams(state);
+            initLaunchParams(state, 32);
+            auto result = render(state, output_buffer_type, i * 2 + 0);
+            auto result_grad = render(state, output_buffer_type, i * 2 + 1); // needs independent sampling
 
-            { // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
+            float gradient_r = 0.0f;
+            float gradient_g = 0.0f;
+            float gradient_b = 0.0f;
+            float loss = 0.0f;
 
-                sutil::CUDAOutputBuffer<uchar4> output_buffer(
-                    output_buffer_type,
-                    state.params.width,
-                    state.params.height);
-                sutil::CUDAOutputBuffer<uchar4> gradient_buffer(
-                    output_buffer_type,
-                    state.params.width,
-                    state.params.height);
+            for (unsigned int idx = 0; idx < state.params.width * state.params.height; ++idx)
+            {
+                // Use high-precision float4 radiance buffers instead of quantized uint8 buffers
+                float4 color_theta = result.color_radiance_data[idx];
+                float4 color_init = gt_result.color_radiance_data[idx];
+                float4 grad_data = result_grad.gradient_radiance_data[idx];
 
-                handleCameraUpdate(state.params);
-                handleResize(output_buffer, state.params);
-                handleResize(gradient_buffer, state.params);
-                launchSubframe(output_buffer, gradient_buffer, state);
+                float r_theta = color_theta.x;
+                float g_theta = color_theta.y;
+                float b_theta = color_theta.z;
+                float r_init = color_init.x;
+                float g_init = color_init.y;
+                float b_init = color_init.z;
+                float r_grad = grad_data.x;
+                float g_grad = grad_data.y;
+                float b_grad = grad_data.z;
 
-                sutil::ImageBuffer buffer;
-                buffer.data = output_buffer.getHostPointer();
-                buffer.width = output_buffer.width();
-                buffer.height = output_buffer.height();
-                buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
-
-                sutil::ImageBuffer gradient;
-                gradient.data = gradient_buffer.getHostPointer();
-                gradient.width = gradient_buffer.width();
-                gradient.height = gradient_buffer.height();
-                gradient.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
-
-                double gradient_r = 0.0;
-                double gradient_g = 0.0;
-                double gradient_b = 0.0;
-                double loss = 0.0;
-
-                for (unsigned int idx = 0; idx < state.params.width * state.params.height; ++idx)
-                {
-                    // std::cout << "#" << std::flush;
-                    const int32_t src_idx = 4 * idx;
-
-                    uint8_t u8_r_theta = reinterpret_cast<uint8_t *>(buffer.data)[src_idx + 0];
-                    uint8_t u8_g_theta = reinterpret_cast<uint8_t *>(buffer.data)[src_idx + 1];
-                    uint8_t u8_b_theta = reinterpret_cast<uint8_t *>(buffer.data)[src_idx + 2];
-                    uint8_t u8_r_init = reinterpret_cast<uint8_t *>(buffer_init.data)[src_idx + 0];
-                    uint8_t u8_g_init = reinterpret_cast<uint8_t *>(buffer_init.data)[src_idx + 1];
-                    uint8_t u8_b_init = reinterpret_cast<uint8_t *>(buffer_init.data)[src_idx + 2];
-                    uint8_t u8_r_grad = reinterpret_cast<uint8_t *>(gradient.data)[src_idx + 0];
-                    uint8_t u8_g_grad = reinterpret_cast<uint8_t *>(gradient.data)[src_idx + 1];
-                    uint8_t u8_b_grad = reinterpret_cast<uint8_t *>(gradient.data)[src_idx + 2];
-                    double r_theta = static_cast<double>(u8_r_theta) / 255.0;
-                    double g_theta = static_cast<double>(u8_g_theta) / 255.0;
-                    double b_theta = static_cast<double>(u8_b_theta) / 255.0;
-                    double r_init = static_cast<double>(u8_r_init) / 255.0;
-                    double g_init = static_cast<double>(u8_g_init) / 255.0;
-                    double b_init = static_cast<double>(u8_b_init) / 255.0;
-                    double r_grad = static_cast<double>(u8_r_grad) / 255.0;
-                    double g_grad = static_cast<double>(u8_g_grad) / 255.0;
-                    double b_grad = static_cast<double>(u8_b_grad) / 255.0;
-
-                    gradient_r += (r_theta - r_init) * r_grad;
-                    gradient_g += (g_theta - g_init) * g_grad;
-                    gradient_b += (b_theta - b_init) * b_grad;
-                    loss += (r_theta - r_init) * (r_theta - r_init);
-                    loss += (g_theta - g_init) * (g_theta - g_init);
-                    loss += (b_theta - b_init) * (b_theta - b_init);
-                }
-
-                std::cout << "Iteration " << i << " - Loss: " << loss
-                          << " | Gradient R: " << gradient_r
-                          << " G: " << gradient_g
-                          << " B: " << gradient_b << std::endl;
-
-                for (size_t i = 0; i < g_material_parameter_mask.size(); ++i)
-                {
-                    if (g_material_parameter_mask[i])
-                    {
-                        g_diffuse_colors_init[i].x -= LEARNING_RATE * static_cast<float>(gradient_r) / (state.params.width * state.params.height * 255.0f);
-                        g_diffuse_colors_init[i].y -= LEARNING_RATE * static_cast<float>(gradient_g) / (state.params.width * state.params.height * 255.0f);
-                        g_diffuse_colors_init[i].z -= LEARNING_RATE * static_cast<float>(gradient_b) / (state.params.width * state.params.height * 255.0f);
-                        g_diffuse_colors_init[i].x = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[i].x));
-                        g_diffuse_colors_init[i].y = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[i].y));
-                        g_diffuse_colors_init[i].z = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[i].z));
-                        std::cout << "Updated parameters to: "
-                                  << g_diffuse_colors_init[i].x << ", "
-                                  << g_diffuse_colors_init[i].y << ", "
-                                  << g_diffuse_colors_init[i].z << std::endl;
-
-                        float mse = ((g_diffuse_colors_init[i].x - g_diffuse_colors_gt[i].x) * (g_diffuse_colors_init[i].x - g_diffuse_colors_gt[i].x) +
-                                     (g_diffuse_colors_init[i].y - g_diffuse_colors_gt[i].y) * (g_diffuse_colors_init[i].y - g_diffuse_colors_gt[i].y) +
-                                     (g_diffuse_colors_init[i].z - g_diffuse_colors_gt[i].z) * (g_diffuse_colors_init[i].z - g_diffuse_colors_gt[i].z)) /
-                                    3.0f;
-                        std::cout << "Albedo MSE vs GT: " << mse << std::endl;
-
-                        break;
-                    }
-                }
-
-                std::string outfile("misc/output/I_" + std::to_string(i) + ".png");
-                sutil::saveImage(outfile.c_str(), buffer, false);
-                std::string outfile_grad("misc/output/I_grad_" + std::to_string(i) + ".png");
-                sutil::saveImage(outfile_grad.c_str(), gradient, false);
+                gradient_r += (r_theta - r_init) * r_grad;
+                gradient_g += (g_theta - g_init) * g_grad;
+                gradient_b += (b_theta - b_init) * b_grad;
+                loss += (r_theta - r_init) * (r_theta - r_init);
+                loss += (g_theta - g_init) * (g_theta - g_init);
+                loss += (b_theta - b_init) * (b_theta - b_init);
             }
+
+            std::cout << "Iteration " << i << " - Loss: " << loss
+                      << " | Gradient R: " << gradient_r
+                      << " G: " << gradient_g
+                      << " B: " << gradient_b << std::endl;
+
+            // Save loss to text file
+            std::ofstream loss_file("misc/output/loss.txt", std::ios::app);
+            if (loss_file.is_open())
+            {
+                loss_file << i << " " << loss << std::endl;
+                loss_file.close();
+            }
+
+            for (size_t j = 0; j < g_material_parameter_mask.size(); ++j)
+            {
+                if (g_material_parameter_mask[j])
+                {
+                    g_diffuse_colors_init[j].x -= LEARNING_RATE * gradient_r / (state.params.width * state.params.height);
+                    g_diffuse_colors_init[j].y -= LEARNING_RATE * gradient_g / (state.params.width * state.params.height);
+                    g_diffuse_colors_init[j].z -= LEARNING_RATE * gradient_b / (state.params.width * state.params.height);
+                    g_diffuse_colors_init[j].x = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[j].x));
+                    g_diffuse_colors_init[j].y = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[j].y));
+                    g_diffuse_colors_init[j].z = std::max(0.0f, std::min(1.0f, g_diffuse_colors_init[j].z));
+                    std::cout << "Updated parameters to: "
+                              << g_diffuse_colors_init[j].x << ", "
+                              << g_diffuse_colors_init[j].y << ", "
+                              << g_diffuse_colors_init[j].z << std::endl;
+
+                    float mse = ((g_diffuse_colors_init[j].x - g_diffuse_colors_gt[j].x) * (g_diffuse_colors_init[j].x - g_diffuse_colors_gt[j].x) +
+                                 (g_diffuse_colors_init[j].y - g_diffuse_colors_gt[j].y) * (g_diffuse_colors_init[j].y - g_diffuse_colors_gt[j].y) +
+                                 (g_diffuse_colors_init[j].z - g_diffuse_colors_gt[j].z) * (g_diffuse_colors_init[j].z - g_diffuse_colors_gt[j].z)) /
+                                3.0f;
+                    std::cout << "Albedo MSE vs GT: " << mse << std::endl;
+
+                    break;
+                }
+            }
+
+            std::string outfile("misc/output/I_" + std::to_string(i) + ".png");
+            sutil::saveImage(outfile.c_str(), result.getColorBuffer(), false);
+            std::string outfile_grad("misc/output/I_grad_" + std::to_string(i) + ".png");
+            sutil::saveImage(outfile_grad.c_str(), result.getGradientBuffer(), false);
         }
 
         cleanupState(state);

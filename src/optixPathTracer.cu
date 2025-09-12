@@ -289,9 +289,9 @@ extern "C" __global__ void __raygen__rg()
     const float3 V = params.V;
     const float3 W = params.W;
     const uint3 idx = optixGetLaunchIndex();
-    const int subframe_index = params.subframe_index;
+    const int launch_seed = params.launch_seed;
 
-    unsigned int seed = tea<4>(idx.y * w + idx.x, subframe_index);
+    unsigned int seed = tea<4>(idx.y * w + idx.x, launch_seed);
 
     float3 result = make_float3(0.0f);
     float3 result_grads = make_float3(0.0f);
@@ -367,9 +367,12 @@ extern "C" __global__ void __raygen__rg()
     // }
     params.accum_buffer[image_index] = make_float4(accum_color, 1.0f);
     params.frame_buffer[image_index] = make_color(accum_color);
+    params.gradient_buffer[image_index] = make_color(accum_gradients);
+
+    params.frame_buffer_radiance[image_index] = make_float4(accum_color, 1.0f);
+    params.gradient_buffer_radiance[image_index] = make_float4(accum_gradients, 1.0f);
     // TODO: no gamma correction + in floats
     // params.color_buffer ?
-    params.gradient_buffer[image_index] = make_color(accum_gradients);
 }
 
 extern "C" __global__ void __miss__radiance()

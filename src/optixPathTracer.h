@@ -100,10 +100,12 @@ struct ParallelogramLight
 
 struct Params
 {
-    unsigned int subframe_index;
+    unsigned int launch_seed;
     float4 *accum_buffer;
     uchar4 *frame_buffer;
     uchar4 *gradient_buffer;
+    float4 *frame_buffer_radiance;
+    float4 *gradient_buffer_radiance;
     unsigned int width;
     unsigned int height;
     unsigned int samples_per_launch;
