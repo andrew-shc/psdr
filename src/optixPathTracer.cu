@@ -288,6 +288,7 @@ extern "C" __global__ void __raygen__rg()
     const float3 U = params.U;
     const float3 V = params.V;
     const float3 W = params.W;
+    const float3 W_normalized = normalize(W); // Normalized camera forward direction
     const uint3 idx = optixGetLaunchIndex();
     const int launch_seed = params.launch_seed;
 
@@ -308,12 +309,15 @@ extern "C" __global__ void __raygen__rg()
         float3 ray_direction = normalize(d.x * U + d.y * V + W);
         float3 ray_origin = eye;
 
+        // Cosine term between ray direction and camera forward direction
+        float cos_vignette = dot(ray_direction, W_normalized);
+
         RadiancePRD prd;
-        prd.attenuation = make_float3(1.f); // TODO: vignetting
+        prd.attenuation = make_float3(1.f) * cos_vignette;
         prd.seed = seed;
         prd.depth = 0;
         prd.pdf = 1.0f;
-        prd.gradients = make_float3(1.f); // TODO: vignetting
+        prd.gradients = make_float3(1.f) * cos_vignette;
         prd.num_params_hit = 0;
 
         for (;;)
