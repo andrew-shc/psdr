@@ -188,7 +188,7 @@ struct PathTracerState
 //------------------------------------------------------------------------------
 
 const int32_t TRIANGLE_COUNT = 32;
-const int32_t MAT_COUNT = 4;
+const int32_t MAT_COUNT = 5;
 
 const static std::array<Vertex, TRIANGLE_COUNT * 3> g_vertices =
     {{// Floor  -- white lambert
@@ -333,33 +333,40 @@ static std::array<uint32_t, TRIANGLE_COUNT> g_mat_indices = {{
     1, 1,                         // Right wall    -- green lambert
     2, 2,                         // Left wall     -- red lambert
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Short block   -- white lambert
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Tall block    -- white lambert
-    3, 3                          // Ceiling light -- emmissive
+    4, 4, 0, 0, 0, 0, 0, 0, 0, 0, // Tall block    -- white lambert
+    //             ^         ----- back side
+    3, 3 // Ceiling light -- emmissive
 }};
 
 const std::array<float3, MAT_COUNT> g_emission_colors =
-    {{{0.0f, 0.0f, 0.0f},
-      {0.0f, 0.0f, 0.0f},
-      {0.0f, 0.0f, 0.0f},
-      {1.0f, 1.0f, 0.33333f}}}; //   {1.0f, 1.0f, 0.33333f} //  {15.0f, 15.0f, 5.0f},
+    {{
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 1.0f, 0.33333f}, //   {1.0f, 1.0f, 0.33333f} //  {15.0f, 15.0f, 5.0f},
+        {0.0f, 0.0f, 0.0f},
+    }};
 
 const std::array<float3, MAT_COUNT> g_diffuse_colors_gt =
     {{{0.80f, 0.80f, 0.80f},
       {0.05f, 0.80f, 0.05f},
       {0.80f, 0.05f, 0.05f},
-      {0.50f, 0.00f, 0.00f}}};
+      {0.50f, 0.00f, 0.00f},
+      {0.10f, 0.30f, 0.95f}}};
 
 std::array<float3, MAT_COUNT> g_diffuse_colors_init =
     {{{0.80f, 0.80f, 0.80f},
       {0.05f, 0.80f, 0.05f},
-      {0.50f, 0.50f, 0.50f},
-      {0.50f, 0.00f, 0.00f}}};
+      {0.80f, 0.05f, 0.05f}, // {0.50f, 0.50f, 0.50f},
+      {0.50f, 0.00f, 0.00f},
+      {0.50f, 0.50f, 0.50f}}};
 
 const std::array<bool, MAT_COUNT> g_material_parameter_mask =
     {{false,
       false,
-      true,
-      false}};
+      false,
+      false,
+      true}};
 
 //------------------------------------------------------------------------------
 //
@@ -555,6 +562,7 @@ void buildMeshAccel(PathTracerState &state)
     //
     uint32_t triangle_input_flags[MAT_COUNT] = // One per SBT record for this build input
         {
+            OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT,
             OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT,
             OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT,
             OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT,
@@ -767,7 +775,11 @@ void createPipeline(PathTracerState &state)
         max_traversal_depth));
 }
 
-void createSBT(PathTracerState &state, const std::array<float3, MAT_COUNT> &d_emission_colors, const std::array<float3, MAT_COUNT> &d_diffuse_colors, const std::array<bool, MAT_COUNT> &d_material_parameter_mask)
+void createSBT(
+    PathTracerState &state,
+    const std::array<float3, MAT_COUNT> &d_emission_colors,
+    const std::array<float3, MAT_COUNT> &d_diffuse_colors,
+    const std::array<bool, MAT_COUNT> &d_material_parameter_mask)
 {
     CUdeviceptr d_raygen_record;
     const size_t raygen_record_size = sizeof(RayGenRecord);
