@@ -343,7 +343,7 @@ const std::array<float3, MAT_COUNT> g_emission_colors =
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
-        {1.0f, 1.0f, 0.33333f}, //   {1.0f, 1.0f, 0.33333f} //  {15.0f, 15.0f, 5.0f},
+        {15.0f, 15.0f, 5.0f}, //   {1.0f, 1.0f, 0.33333f} //  {15.0f, 15.0f, 5.0f},
         {0.0f, 0.0f, 0.0f},
     }};
 
@@ -917,10 +917,13 @@ int main(int argc, char *argv[])
     state.params.height = 1080;
     sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::CUDA_DEVICE;
 
-    int ITERATIONS = 100;
-    float LEARNING_RATE = 0.1f;
-    int32_t SAMPLES_PER_LAUNCH = 16;
+    int ITERATIONS = 200;
+    float LEARNING_RATE = 0.01f;
+    int32_t SAMPLES_PER_LAUNCH = 64;
 
+    //
+    // Parse command line options
+    //
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -948,26 +951,6 @@ int main(int argc, char *argv[])
             printUsageAndExit(argv[0]);
         }
     }
-
-    //
-    // Parse command line options
-    //
-
-    // for (int i = 1; i < argc; ++i)
-    // {
-    //     const std::string arg = argv[i];
-    //     if (arg == "--launch-samples" || arg == "-s")
-    //     {
-    //         if (i >= argc - 1)
-    //             printUsageAndExit(argv[0]);
-    //         samples_per_launch = atoi(argv[++i]);
-    //     }
-    //     else
-    //     {
-    //         std::cerr << "Unknown option '" << argv[i] << "'\n";
-    //         printUsageAndExit(argv[0]);
-    //     }
-    // }
 
     try
     {

@@ -333,25 +333,27 @@ extern "C" __global__ void __raygen__rg()
             result += prd.emitted;                              // for primary rays directly hitting emissive sources (bypassing all the PDFs)
             result += prd.radiance * prd.attenuation / prd.pdf; // only non-zero at when it's done, hence we can divide pdf here
 
-            // this is just used for Russian roulette calculation
-            //                                    perceived brightness / luminance
-            // const float p = dot(prd.attenuation, make_float3(0.30f, 0.59f, 0.11f));
-            const bool done = prd.done; // || rnd(prd.seed) > p;
+            float r = powf(params.parameter.x, prd.num_params_hit - 1);
+            float g = powf(params.parameter.y, prd.num_params_hit - 1);
+            float b = powf(params.parameter.z, prd.num_params_hit - 1);
+            result_grads += prd.gradients / prd.pdf * prd.num_params_hit * make_float3(r, g, b);
+
+            // Russian roulette using attenuation magnitude as survival probability
+            const float survival_prob = length(prd.attenuation) * 0.9;
+            const bool russian_roulette_terminate = rnd(prd.seed) > survival_prob;
+            const bool done = prd.done || russian_roulette_terminate;
 
             if (done)
                 break;
 
-            // prd.attenuation /= p;
+            // Compensate for Russian roulette
+            prd.pdf *= survival_prob;
 
             ray_origin = prd.origin;
             ray_direction = prd.direction;
 
             ++prd.depth;
         }
-        float r = powf(params.parameter.x, prd.num_params_hit - 1);
-        float g = powf(params.parameter.y, prd.num_params_hit - 1);
-        float b = powf(params.parameter.z, prd.num_params_hit - 1);
-        result_grads += prd.gradients / prd.pdf * prd.num_params_hit * make_float3(r, g, b);
     } while (--i);
 
     const uint3 launch_index = optixGetLaunchIndex();
@@ -430,20 +432,22 @@ extern "C" __global__ void __closesthit__radiance()
         const float z2 = rnd(seed);
 
         float3 w_in;
-        basic_sample_hemisphere(z1, z2, w_in);
+        // basic_sample_hemisphere(z1, z2, w_in);
+        cosine_sample_hemisphere(z1, z2, w_in);
         Onb onb(N);
         onb.inverse_transform(w_in);
         prd.direction = w_in;
         prd.origin = P;
 
-        float cos_theta = dot(w_in, N);
-        float3 f = rt_data->diffuse_color / M_PIf * cos_theta;
+        // float cos_theta = dot(w_in, N);
+        // float3 f = rt_data->diffuse_color / M_PIf * cos_theta;
+        float3 f = rt_data->diffuse_color;
         prd.attenuation *= f;
 
         if (!is_parameter)
             prd.gradients *= f;
 
-        prd.pdf *= 1 / (2 * M_PIf);
+        prd.pdf *= 1.0; // 1 / (2 * M_PIf);
     }
 
     const float z1 = rnd(seed);
@@ -472,7 +476,9 @@ extern "C" __global__ void __closesthit__radiance()
             Ldist - 0.01f); // tmax
 
     //           MAX DEPTH
-    if (prd.depth >= 20 || !occluded)
+    // if (prd.depth >= 20 || !occluded)
+
+    if (!occluded)
     {
 
         float G = 0.0f;
@@ -492,7 +498,7 @@ extern "C" __global__ void __closesthit__radiance()
         prd.gradients *= f;
 
         prd.pdf *= 1.0f / A;
-        prd.done = true;
+        prd.done = true; // terminate on hitting light
     }
     else
     {
