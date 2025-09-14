@@ -334,7 +334,7 @@ static std::array<uint32_t, TRIANGLE_COUNT> g_mat_indices = {{
     2, 2,                         // Left wall     -- red lambert
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // Short block   -- white lambert
     4, 4, 0, 0, 0, 0, 0, 0, 0, 0, // Tall block    -- white lambert
-    //             ^         ----- back side
+    //^        ----- top side
     3, 3 // Ceiling light -- emmissive
 }};
 
@@ -343,7 +343,7 @@ const std::array<float3, MAT_COUNT> g_emission_colors =
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 0.0f},
-        {15.0f, 15.0f, 5.0f}, //   {1.0f, 1.0f, 0.33333f} //  {15.0f, 15.0f, 5.0f},
+        {15.0f, 15.0f, 5.0f}, // {1.0f, 1.0f, 0.33333f}, //
         {0.0f, 0.0f, 0.0f},
     }};
 
@@ -357,16 +357,16 @@ const std::array<float3, MAT_COUNT> g_diffuse_colors_gt =
 std::array<float3, MAT_COUNT> g_diffuse_colors_init =
     {{{0.80f, 0.80f, 0.80f},
       {0.05f, 0.80f, 0.05f},
-      {0.80f, 0.05f, 0.05f}, // {0.50f, 0.50f, 0.50f},
+      {0.50f, 0.50f, 0.50f}, // {0.80f, 0.05f, 0.05f},
       {0.50f, 0.00f, 0.00f},
-      {0.50f, 0.50f, 0.50f}}};
+      {0.10f, 0.30f, 0.95f}}};
 
 const std::array<bool, MAT_COUNT> g_material_parameter_mask =
     {{false,
       false,
+      true,
       false,
-      false,
-      true}};
+      false}};
 
 //------------------------------------------------------------------------------
 //
@@ -400,6 +400,7 @@ void initLaunchParams(PathTracerState &state, int32_t samples_per_launch)
     state.params.launch_seed = 0u;
 
     state.params.light.emission = make_float3(15.0f, 15.0f, 5.0f);
+    // state.params.light.emission = make_float3(1.0f, 1.0f, 0.33333f);
     state.params.light.corner = make_float3(343.0f, 548.5f, 227.0f);
     state.params.light.v1 = make_float3(0.0f, 0.0f, 105.0f);
     state.params.light.v2 = make_float3(-130.0f, 0.0f, 0.0f);
@@ -918,7 +919,7 @@ int main(int argc, char *argv[])
     sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::CUDA_DEVICE;
 
     int ITERATIONS = 200;
-    float LEARNING_RATE = 0.01f;
+    float LEARNING_RATE = 0.1f;
     int32_t SAMPLES_PER_LAUNCH = 64;
 
     //
@@ -975,7 +976,7 @@ int main(int argc, char *argv[])
         }
 
         // Generate ground truth
-        initLaunchParams(state, 128);
+        initLaunchParams(state, 512);
         auto gt_result = render(state, output_buffer_type, 0);
 
         std::string outfile("misc/output/I_gt.png");
@@ -986,7 +987,7 @@ int main(int argc, char *argv[])
         for (int i = 0; i < ITERATIONS; i++)
         {
             createSBT(state, g_emission_colors, g_diffuse_colors_init, g_material_parameter_mask);
-            initLaunchParams(state, 32);
+            initLaunchParams(state, SAMPLES_PER_LAUNCH);
             auto result = render(state, output_buffer_type, i * 2 + 0);
             auto result_grad = render(state, output_buffer_type, i * 2 + 1); // needs independent sampling
 

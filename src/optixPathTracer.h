@@ -41,8 +41,10 @@ struct RadiancePRD
     float3 attenuation;
     unsigned int seed;
     int depth;
-    float pdf;
-    float3 gradients;
+    float pdf_throughput;
+    float pdf_radiance;
+    float3 gradient_throughput;
+    float3 gradient_radiance;
     unsigned int num_params_hit;
 
     // these are produced by CH and MS, and consumed by the caller after trace returned.
@@ -53,7 +55,7 @@ struct RadiancePRD
     int done;
 };
 
-const unsigned int radiancePayloadSemantics[23] =
+const unsigned int radiancePayloadSemantics[27] =
     {
         // RadiancePRD::attenuation
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
@@ -63,9 +65,15 @@ const unsigned int radiancePayloadSemantics[23] =
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
         // RadiancePRD::depth
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
-        // RadiancePRD::pdf
+        // RadiancePRD::pdf_throughput
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
-        // RadiancePRD::gradients
+        // RadiancePRD::pdf_radiance
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        // RadiancePRD::gradient_throughput
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
+        // RadiancePRD::gradient_radiance
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
         OPTIX_PAYLOAD_SEMANTICS_TRACE_CALLER_READ_WRITE | OPTIX_PAYLOAD_SEMANTICS_CH_READ_WRITE,
