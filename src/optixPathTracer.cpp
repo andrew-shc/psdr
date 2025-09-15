@@ -354,19 +354,20 @@ const std::array<float3, MAT_COUNT> g_diffuse_colors_gt =
       {0.50f, 0.00f, 0.00f},
       {0.10f, 0.30f, 0.95f}}};
 
+// {0.50f, 0.50f, 0.50f},
 std::array<float3, MAT_COUNT> g_diffuse_colors_init =
     {{{0.80f, 0.80f, 0.80f},
       {0.05f, 0.80f, 0.05f},
-      {0.50f, 0.50f, 0.50f}, // {0.80f, 0.05f, 0.05f},
+      {0.80f, 0.05f, 0.05f},
       {0.50f, 0.00f, 0.00f},
-      {0.10f, 0.30f, 0.95f}}};
+      {0.50f, 0.50f, 0.50f}}};
 
 const std::array<bool, MAT_COUNT> g_material_parameter_mask =
     {{false,
       false,
-      true,
       false,
-      false}};
+      false,
+      true}};
 
 //------------------------------------------------------------------------------
 //
@@ -1020,6 +1021,8 @@ int main(int argc, char *argv[])
                 loss += (g_theta - g_init) * (g_theta - g_init);
                 loss += (b_theta - b_init) * (b_theta - b_init);
             }
+
+            loss /= state.params.width * state.params.height;
 
             std::cout << "Iteration " << i << " - Loss: " << loss
                       << " | Gradient R: " << gradient_r
